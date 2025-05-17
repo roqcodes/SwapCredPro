@@ -1,41 +1,47 @@
 const admin = require('firebase-admin');
-const path = require('path');
-const fs = require('fs');
 
+// Serverless-friendly Firebase initialization
 let serviceAccount;
 try {
-  // Try to load service account file
-  const serviceAccountPath = path.join(__dirname, '../../firebase-service-account.json');
-  if (fs.existsSync(serviceAccountPath)) {
-    serviceAccount = require(serviceAccountPath);
-    console.log('Loaded Firebase service account from file');
-  } else {
-    console.log('Service account file not found, using environment variables');
-    serviceAccount = {
-      "type": "service_account",
-      "project_id": process.env.FIREBASE_PROJECT_ID,
-      "private_key": process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-      "client_email": process.env.FIREBASE_CLIENT_EMAIL
-    };
+  // Only use environment variables for Vercel deployment
+  serviceAccount = {
+    "type": "service_account",
+    "project_id": process.env.FIREBASE_PROJECT_ID,
+    "private_key": process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    "client_email": process.env.FIREBASE_CLIENT_EMAIL
+  };
+
+  // Validate required fields
+  if (!serviceAccount.project_id || !serviceAccount.private_key || !serviceAccount.client_email) {
+    throw new Error('Missing required Firebase credentials in environment variables');
   }
 } catch (error) {
-  console.error('Error loading service account:', error);
-  process.exit(1);
+  console.error('Error preparing Firebase credentials:', error);
+  // Don't exit process in serverless environment
+  serviceAccount = null;
 }
 
-// Initialize Firebase Admin
-try {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-  console.log('Firebase Admin SDK initialized successfully (Firestore only)');
-} catch (error) {
-  console.error('Failed to initialize Firebase Admin:', error);
-  process.exit(1);
+// Only initialize if we have valid credentials
+let db;
+if (serviceAccount) {
+  try {
+    // Check if app is already initialized to prevent duplicate initialization
+    let firebaseApp;
+    try {
+      firebaseApp = admin.app();
+    } catch (e) {
+      firebaseApp = admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+      });
+    }
+    db = admin.firestore();
+    console.log('Firebase Admin SDK initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize Firebase Admin:', error);
+    db = null;
+  }
+} else {
+  console.error('Firebase initialization skipped due to missing credentials');
 }
 
-// Only export Firestore database and admin
-const db = admin.firestore();
-
-// Export admin for utility features but not auth
 module.exports = { admin, db }; 

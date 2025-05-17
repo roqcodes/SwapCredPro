@@ -1,43 +1,15 @@
-const redis = require('redis');
-const { RateLimiterRedis, RateLimiterMemory } = require('rate-limiter-flexible');
+const { RateLimiterMemory } = require('rate-limiter-flexible');
 const { logger } = require('../utils/logger');
 
-// Try to use Redis if available, fallback to memory store for easier development setup
-let rateLimiter;
+// For Vercel serverless environment, use in-memory rate limiter
+// Each serverless function instance will have its own limiter
+// This is not ideal but provides basic protection
+const rateLimiter = new RateLimiterMemory({
+  points: 100, // 100 requests
+  duration: 60, // per 1 minute
+});
 
-try {
-  // Check if REDIS_URL is set in environment
-  if (process.env.REDIS_URL) {
-    const redisClient = redis.createClient({
-      url: process.env.REDIS_URL,
-      enable_offline_queue: false
-    });
-
-    redisClient.on('error', (err) => {
-      logger.error('Redis error:', err);
-    });
-
-    // Create Redis rate limiter
-    rateLimiter = new RateLimiterRedis({
-      storeClient: redisClient,
-      keyPrefix: 'ratelimit',
-      points: 10, // 10 requests
-      duration: 60, // per 1 minute by IP
-    });
-
-    logger.info('Using Redis-based rate limiter');
-  } else {
-    throw new Error('Redis URL not configured, using memory rate limiter instead');
-  }
-} catch (err) {
-  // Fallback to memory store if Redis is not available
-  logger.warn(`Fallback to memory rate limiter: ${err.message}`);
-  
-  rateLimiter = new RateLimiterMemory({
-    points: 100, // 100 requests
-    duration: 60, // per 1 minute
-  });
-}
+logger.info('Using memory-based rate limiter for serverless environment');
 
 // Configure more reasonable rate limits for authentication endpoints
 const authRateLimiter = new RateLimiterMemory({

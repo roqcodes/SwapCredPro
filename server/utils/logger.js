@@ -1,156 +1,141 @@
 const winston = require('winston');
-const path = require('path');
-const fs = require('fs');
-const { sanitizeData, sanitizeEmail, sanitizeId } = require('./sanitizer');
 
-// Create logs directory if it doesn't exist
-const logsDir = path.join(__dirname, '../logs');
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir);
-}
+// Format function that adds colors and proper formatting
+const customFormat = winston.format.printf(({ level, message, timestamp, ...meta }) => {
+  const metaString = Object.keys(meta).length > 0 
+    ? ` | ${JSON.stringify(meta)}`
+    : '';
+  return `[${timestamp}] ${level}: ${message}${metaString}`;
+});
 
-// Add a format to sanitize sensitive data
-const sanitizeFormat = winston.format((info) => {
-  // Sanitize all metadata
-  const sanitized = sanitizeData(info);
-  
-  // Extra sanitization for common fields
-  if (sanitized.email) {
-    sanitized.email = sanitizeEmail(sanitized.email);
-  }
-  
-  if (sanitized.shopifyId) {
-    sanitized.shopifyId = sanitizeId(sanitized.shopifyId);
-  }
-  
-  // Keep the original level and message
-  sanitized.level = info.level;
-  sanitized.message = info.message;
-  
-  return sanitized;
-})();
-
-// Define simplified log format for better readability
-const simpleFormat = winston.format.combine(
-  winston.format.timestamp({ format: 'HH:mm:ss' }),
-  sanitizeFormat,
-  winston.format.printf((info) => {
-    const { timestamp, level, message, requestId, action, ...meta } = info;
-    
-    // Create a user-friendly message
-    let actionStr = action ? `${action}: ` : '';
-    // Email already sanitized by sanitizeFormat
-    let userStr = meta.email ? `for ${meta.email}` : '';
-    let resultStr = '';
-    
-    if (meta.cached) {
-      return `${timestamp} | Using cached data ${userStr}`;
-    }
-    
-    if (meta.apiCall) {
-      return `${timestamp} | API Call to ${meta.service || 'external service'}`;
-    }
-    
-    if (meta.userId && meta.created) {
-      return `${timestamp} | Created new user account for ${meta.email}`;
-    }
-    
-    if (meta.userId && !meta.created) {
-      return `${timestamp} | Found existing user ${userStr}`;
-    }
-    
-    if (meta.responseTime) {
-      return `${timestamp} | Request completed with status ${meta.status || 200} in ${Math.round(meta.responseTime)}ms`;
-    }
-    
-    // Default format
-    return `${timestamp} | ${actionStr}${message} ${userStr}`.trim();
-  })
-);
-
-// Create a Winston logger
+// Create the logger instance
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
   format: winston.format.combine(
-    sanitizeFormat,
-    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' })
+    winston.format.timestamp({
+      format: 'YYYY-MM-DD HH:mm:ss'
+    }),
+    winston.format.errors({ stack: true }),
+    winston.format.splat(),
+    winston.format.json()
   ),
+  defaultMeta: { service: 'swapcred-api' },
   transports: [
-    // Console transport - simple human-readable format
+    // Always log to console
     new winston.transports.Console({
       format: winston.format.combine(
         winston.format.colorize(),
-        simpleFormat
-      )
-    }),
-    // File transport - for all logs, keep more detailed info in files
-    new winston.transports.File({ 
-      filename: path.join(logsDir, 'combined.log'),
-      maxsize: 5242880, // 5MB
-      maxFiles: 5,
-      format: winston.format.combine(
-        winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-        sanitizeFormat,
-        winston.format.json()
-      )
-    }),
-    // File transport - for error logs only
-    new winston.transports.File({ 
-      filename: path.join(logsDir, 'error.log'),
-      level: 'error',
-      maxsize: 5242880, // 5MB
-      maxFiles: 5,
-      format: winston.format.combine(
-        winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-        sanitizeFormat,
-        winston.format.json()
+        customFormat
       )
     })
   ]
 });
 
-// Create a request-scoped logger with user-friendly action types
-const createRequestLogger = (requestId) => {
-  return {
-    debug: (message, meta = {}) => logger.debug(message, { requestId, ...meta }),
-    info: (message, meta = {}) => logger.info(message, { requestId, ...meta }),
-    warn: (message, meta = {}) => logger.warn(message, { requestId, ...meta }),
-    error: (message, meta = {}) => logger.error(message, { requestId, ...meta }),
-    
-    // User-friendly action loggers
-    login: (email, meta = {}) => {
-      logger.info(`User login`, { requestId, action: 'Login', email, ...meta });
-    },
-    found: (email, userId, meta = {}) => {
-      logger.info(`Found user`, { requestId, email, userId, ...meta });
-    },
-    created: (email, userId, meta = {}) => {
-      logger.info(`Created user`, { requestId, email, userId, created: true, ...meta });
-    },
-    shopify: (email, meta = {}) => {
-      logger.info(`Shopify lookup`, { requestId, action: 'Shopify', email, ...meta });
-    },
-    success: (message, meta = {}) => {
-      logger.info(message, { requestId, action: 'Success', ...meta });
-    },
-    fail: (message, meta = {}) => {
-      logger.warn(message, { requestId, action: 'Failed', ...meta });
-    },
-    
-    // Track API calls in a simplified way
-    api: (service, endpoint, meta = {}) => {
-      logger.info(`Calling ${service}`, { 
-        requestId, 
-        apiCall: true, 
-        service, 
-        endpoint, 
-        ...meta 
-      });
-    }
-  };
+// Additional methods for specific log types
+const enhancedLogger = {
+  // Standard winston methods
+  info: (message, meta = {}) => logger.info(message, meta),
+  warn: (message, meta = {}) => logger.warn(message, meta),
+  error: (message, meta = {}) => logger.error(message, meta),
+  debug: (message, meta = {}) => logger.debug(message, meta),
+  
+  // Custom methods for specific events
+  login: (email, meta = {}) => {
+    logger.info(`Login attempt: ${email}`, {
+      event: 'AUTH_ATTEMPT',
+      email,
+      ...meta
+    });
+  },
+  
+  loginSuccess: (email, userId, meta = {}) => {
+    logger.info(`Login success: ${email}`, {
+      event: 'AUTH_SUCCESS',
+      email,
+      userId,
+      ...meta
+    });
+  },
+
+  loginFailed: (email, reason, meta = {}) => {
+    logger.warn(`Login failed: ${email}`, {
+      event: 'AUTH_FAILED',
+      email,
+      reason,
+      ...meta
+    });
+  },
+
+  apiRequest: (path, method, meta = {}) => {
+    logger.debug(`API Request: ${method} ${path}`, {
+      event: 'API_REQUEST',
+      path,
+      method,
+      ...meta
+    });
+  },
+  
+  apiResponse: (path, method, statusCode, responseTime, meta = {}) => {
+    const level = statusCode >= 400 ? 'warn' : 'debug';
+    logger[level](`API Response: ${method} ${path} ${statusCode} (${responseTime}ms)`, {
+      event: 'API_RESPONSE',
+      path,
+      method,
+      statusCode,
+      responseTime,
+      ...meta
+    });
+  },
+  
+  success: (message, meta = {}) => {
+    logger.info(`✅ ${message}`, {
+      event: 'SUCCESS',
+      ...meta
+    });
+  },
+  
+  fail: (message, meta = {}) => {
+    logger.warn(`❌ ${message}`, {
+      event: 'FAILURE',
+      ...meta
+    });
+  },
+  
+  audit: (action, userId, meta = {}) => {
+    logger.info(`AUDIT: ${action}`, {
+      event: 'AUDIT',
+      userId,
+      action,
+      ...meta
+    });
+  }
 };
 
-module.exports = {
-  logger,
-  createRequestLogger
+module.exports = { 
+  logger: enhancedLogger,
+  // Factory to create a request-specific logger with contextual info
+  createRequestLogger: (req) => {
+    const reqId = req.id || 'unknown';
+    const path = req.originalUrl || req.url || 'unknown';
+    const method = req.method || 'unknown';
+    const ip = req.ip || 'unknown';
+    
+    const requestLogger = {
+      ...enhancedLogger,
+      info: (message, meta = {}) => enhancedLogger.info(message, { 
+        reqId, path, method, ip, ...meta 
+      }),
+      warn: (message, meta = {}) => enhancedLogger.warn(message, { 
+        reqId, path, method, ip, ...meta 
+      }),
+      error: (message, meta = {}) => enhancedLogger.error(message, { 
+        reqId, path, method, ip, ...meta 
+      }),
+      debug: (message, meta = {}) => enhancedLogger.debug(message, { 
+        reqId, path, method, ip, ...meta 
+      }),
+    };
+    
+    return requestLogger;
+  }
 };

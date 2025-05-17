@@ -1,15 +1,11 @@
 const path = require('path');
-const fs = require('fs');
 
 // Load environment variables with better error handling
-const envPath = path.resolve(__dirname, '../.env');
-
-if (fs.existsSync(envPath)) {
-  console.log(`Loading environment variables from ${envPath}`);
-  require('dotenv').config({ path: envPath });
-} else {
-  console.error(`\u26A0\uFE0F Warning: .env file not found at ${envPath}`);
-  console.error('Using existing environment variables. Some features may not work correctly.');
+try {
+  require('dotenv').config();
+  console.log('Environment variables loaded');
+} catch (error) {
+  console.error('Error loading environment variables:', error.message);
 }
 
 // Check required environment variables
@@ -24,7 +20,7 @@ const requiredEnvVars = [
 const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
 if (missingVars.length > 0) {
   console.error('\u26A0\uFE0F Missing required environment variables:', missingVars.join(', '));
-  console.error('Please add these to your .env file');
+  console.error('Please add these to your environment or Vercel project settings');
 }
 
 const express = require('express');
@@ -53,33 +49,49 @@ const { generalLimiter, authLimiter } = require('./middleware/rateLimiter');
 const helmet = require('helmet');
 
 // Security middleware
-app.use(helmet());
-
-// Set additional security headers
-app.use((req, res, next) => {
-  // Strict-Transport-Security for HTTPS enforcement
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
-  // Content-Security-Policy to prevent XSS and other attacks
-  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data: https://res.cloudinary.com; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.printersparekart.com;");
-  // X-Content-Type-Options to prevent MIME type sniffing
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  // X-Frame-Options to prevent clickjacking
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  // X-XSS-Protection as an additional layer of XSS protection
-  res.setHeader('X-XSS-Protection', '1; mode=block');
-  // Referrer-Policy to control referrer information
-  res.setHeader('Referrer-Policy', 'same-origin');
-  next();
-});
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      connectSrc: ["'self'", "https://api.printersparekart.com"],
+      imgSrc: ["'self'", "data:", "https://res.cloudinary.com"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"]
+    }
+  }
+}));
 
 // Determine allowed origins based on environment
 const allowedOrigins = process.env.NODE_ENV === 'production'
-  ? [process.env.VERCEL_URL, 'https://swapcred.vercel.app', 'https://swapcredvs.vercel.app']
+  ? [
+      process.env.VERCEL_URL && `https://${process.env.VERCEL_URL}`,
+      process.env.VERCEL_URL && `https://${process.env.VERCEL_URL.replace(/^www\./, '')}`,
+      'https://swapcred.vercel.app', 
+      'https://swapcredvs.vercel.app',
+      // Allow your custom domain if you have one
+      process.env.CUSTOM_DOMAIN && `https://${process.env.CUSTOM_DOMAIN}`
+    ].filter(Boolean) // Remove undefined values
   : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+
+console.log('Allowed CORS origins:', allowedOrigins);
 
 // Middleware
 app.use(cors({
-  origin: allowedOrigins,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps, curl)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin is allowed
+    if (allowedOrigins.indexOf(origin) === -1) {
+      console.warn(`CORS blocked request from: ${origin}`);
+      // Log but allow in production to avoid deployment issues
+      if (process.env.NODE_ENV === 'production') {
+        return callback(null, true);
+      }
+      return callback(new Error('CORS policy violation'), false);
+    }
+    return callback(null, true);
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
@@ -111,19 +123,10 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date() });
 });
 
-// Serve static assets in production
-if (process.env.NODE_ENV === 'production') {
-  // In Vercel, we let the platform handle static file serving
-  // This is just a fallback for other environments
-  const clientDistPath = path.join(__dirname, '../client/dist');
-  if (fs.existsSync(clientDistPath)) {
-    app.use(express.static(clientDistPath));
-    
-    app.get('*', (req, res) => {
-      res.sendFile(path.resolve(clientDistPath, 'index.html'));
-    });
-  }
-}
+// For Vercel, add a root handler
+app.get('/', (req, res) => {
+  res.status(200).json({ status: 'API is running' });
+});
 
 // Error handler middleware
 app.use((err, req, res, next) => {
@@ -151,12 +154,4 @@ app.use((err, req, res, next) => {
 });
 
 // For Vercel serverless functions, we need to export the app
-if (process.env.VERCEL) {
-  module.exports = app;
-} else {
-  // Start the server in regular Node.js environment
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Server environment: ${process.env.NODE_ENV || 'development'}`);
-  });
-} 
+module.exports = app; 

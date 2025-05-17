@@ -9,28 +9,36 @@ const requestTracker = (req, res, next) => {
   // Attach request ID to response headers
   res.setHeader('X-Request-Id', requestId);
   
-  // Create a request-scoped logger and attach to request object
-  req.logger = createRequestLogger(requestId);
+  // Add Vercel request ID if present
+  if (req.headers['x-vercel-id']) {
+    req.id = req.headers['x-vercel-id'];
+  } else {
+    req.id = requestId;
+  }
   
-  // Log the incoming request in a simple way
-  req.logger.info(`Request: ${req.method} ${req.originalUrl.split('?')[0]}`);
+  // Create a request-scoped logger and attach to request object
+  req.logger = createRequestLogger(req);
+  
+  // Log the incoming request
+  req.logger.info(`${req.method} ${req.originalUrl.split('?')[0]}`);
   
   // Log response when it's sent
-  const originalSend = res.send;
-  res.send = function(body) {
-    // Log the response with a simplified format
-    const responseTime = Date.now() - req.startTime;
-    req.logger.info(`Response completed`, {
-      status: res.statusCode,
-      responseTime,
-      path: req.originalUrl.split('?')[0]
-    });
-    
-    return originalSend.call(this, body);
-  };
+  const startTime = Date.now();
   
-  // Record start time
-  req.startTime = Date.now();
+  // Use on('finish') event instead of overriding send
+  res.on('finish', () => {
+    const responseTime = Date.now() - startTime;
+    const statusCode = res.statusCode;
+    
+    // Log with appropriate level based on status code
+    if (statusCode >= 500) {
+      req.logger.error(`Response ${statusCode}`, { responseTime, statusCode });
+    } else if (statusCode >= 400) {
+      req.logger.warn(`Response ${statusCode}`, { responseTime, statusCode });
+    } else {
+      req.logger.info(`Response ${statusCode}`, { responseTime, statusCode });
+    }
+  });
   
   next();
 };
